@@ -25,20 +25,7 @@ const int TIMEOUT_MS = 50;       // resend the window if base isn't ACKed in tim
 const int MAX_TIMEOUTS = 20;     // give up after this many timeouts in a row
 
 double lossRate = 0, corruptRate = 0;
-int packetsSent = 0, retransmissions = 0, timeouts = 0;
-
-// Sends through a deliberately bad "network": may drop the packet,
-// or flip one random bit in it. (Same as the stop-and-wait version.)
-void unreliableSend(sock_t sock, const Packet& pkt, int size, const sockaddr_in& dest) {
-    if (chance(lossRate)) return;  // packet lost
-
-    Packet copy = pkt;
-    if (chance(corruptRate)) {
-        char* bytes = (char*)&copy;
-        bytes[rand() % size] ^= (1 << (rand() % 8));  // flip one bit
-    }
-    sendto(sock, (const char*)&copy, size, 0, (const sockaddr*)&dest, sizeof dest);
-}
+int packetsSent = 0, retransmissions = 0, timeouts = 0, badAcks = 0;
 
 // A packet waiting in the window: ready to send (already in network order).
 struct Slot {
@@ -107,7 +94,7 @@ int main(int argc, char* argv[]) {
             toNetworkOrder(s.pkt);
 
             if (base == nextSeq) timerStart = Clock::now();  // window was empty: start timer
-            unreliableSend(sock, s.pkt, s.size, dest);
+            unreliableSend(sock, s.pkt, s.size, dest, lossRate, corruptRate);
             packetsSent++;
             inFlight.push_back(s);
             nextSeq++;
@@ -119,10 +106,13 @@ int main(int argc, char* argv[]) {
         int remaining = TIMEOUT_MS - elapsed;
         if (remaining > 0) {
             setRecvTimeout(sock, remaining);
-            uint32_t ack;
-            if (recv(sock, (char*)&ack, sizeof ack, 0) == sizeof ack) {
-                uint32_t k = ntohl(ack);  // "I have every packet before k"
-                if (k > base && k <= nextSeq) {
+            Packet ack;
+            int n = recv(sock, (char*)&ack, sizeof ack, 0);
+            if (n >= 0) {
+                uint32_t k;  // "I have every packet before k"
+                if (!readAck(ack, n, k)) {
+                    badAcks++;  // corrupted ACK: never trust it, keep waiting
+                } else if (k > base && k <= nextSeq) {
                     // 5. Slide the window: drop every packet the ACK confirms.
                     while (base < k) {
                         inFlight.pop_front();
@@ -150,7 +140,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         for (const Slot& s : inFlight) {
-            unreliableSend(sock, s.pkt, s.size, dest);
+            unreliableSend(sock, s.pkt, s.size, dest, lossRate, corruptRate);
             packetsSent++;
             retransmissions++;
         }
@@ -161,7 +151,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Sent " << totalBytes << " bytes in " << lastSeq + 1 << " packets, "
               << secs << " s (window " << window << ")\n";
     std::cout << "Transmissions: " << packetsSent << " (" << retransmissions
-              << " retransmissions, " << timeouts << " timeouts)\n";
+              << " retransmissions, " << timeouts << " timeouts, " << badAcks << " corrupted ACKs ignored)\n";
     closeSocket(sock);
     return 0;
 }

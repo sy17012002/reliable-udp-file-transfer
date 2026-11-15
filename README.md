@@ -9,21 +9,21 @@ transfer on top of plain UDP sockets, in two versions:
 | [`go-back-n/`](go-back-n) | Go-Back-N sliding window | up to N |
 
 Both use the same 8-byte packet header (sequence number, length, 16-bit
-checksum), handle lost packets, corrupted packets and lost ACKs, and include a
-fault-injection mode that randomly drops and corrupts packets to prove the
-transfer still works. Standard POSIX sockets / Winsock; builds on Linux, macOS
-and Windows.
+checksum) for data **and** ACKs. They handle lost packets, corrupted packets and
+lost or corrupted ACKs, and include a fault-injection mode that randomly drops
+and corrupts packets **in both directions** to prove the transfer still works.
+Standard POSIX sockets / Winsock; builds on Linux, macOS and Windows.
 
 ## Results
 
-1 MB file, 50 ms timeout, loss applied to both data packets and ACKs. The file
-arrived byte-for-byte identical in every run.
+1 MB file (978 packets) over loopback, 50 ms timeout. Loss and corruption are
+applied to both data packets and ACKs. The file arrived byte-for-byte identical
+in every run.
 
 | Loss | Corruption | Stop-and-wait | Go-Back-N (N=8) |
 |---:|---:|---:|---:|
-| 0% | 0% | 0.034 s | 0.005 s |
-| 10% | 0% | 14.1 s | 6.5 s |
-| 20% | 5% | 36.8 s | 17.8 s |
+| 10% | 0% | 13.7 s | 6.6 s |
+| 20% | 5% | 41.4 s | 18.0 s |
 
 Go-Back-N is about 2× faster under loss, at the cost of more retransmissions
 (one loss resends the whole window). See each folder's README for the full
@@ -34,7 +34,7 @@ results, how it works, and how to build and run it.
 ```bash
 cd go-back-n
 make
-./receiver 9000 received.jpg 0.1                    # terminal 1
+./receiver 9000 received.jpg 0.1 0.05               # terminal 1
 ./sender 127.0.0.1 9000 photo.jpg 8 0.1 0.05        # terminal 2
 cmp photo.jpg received.jpg && echo identical
 ```

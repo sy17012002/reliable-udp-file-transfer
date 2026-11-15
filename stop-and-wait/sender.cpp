@@ -14,20 +14,7 @@ const int TIMEOUT_MS = 50;   // how long to wait for an ACK before resending
 const int MAX_TRIES = 20;    // give up on a packet after this many attempts
 
 double lossRate = 0, corruptRate = 0;
-int packetsSent = 0, retransmissions = 0;
-
-// Sends through a deliberately bad "network": may drop the packet,
-// or flip one random bit in it.
-void unreliableSend(sock_t sock, const Packet& pkt, int size, const sockaddr_in& dest) {
-    if (chance(lossRate)) return;  // packet lost
-
-    Packet copy = pkt;
-    if (chance(corruptRate)) {
-        char* bytes = (char*)&copy;
-        bytes[rand() % size] ^= (1 << (rand() % 8));  // flip one bit
-    }
-    sendto(sock, (const char*)&copy, size, 0, (const sockaddr*)&dest, sizeof dest);
-}
+int packetsSent = 0, retransmissions = 0, badAcks = 0;
 
 // Sends one packet and waits for its ACK, resending on every timeout.
 // Returns true once the matching ACK arrives.
@@ -40,12 +27,15 @@ bool sendReliably(sock_t sock, const sockaddr_in& dest, Packet pkt) {
     for (int attempt = 1; attempt <= MAX_TRIES; attempt++) {
         if (attempt > 1) retransmissions++;
         packetsSent++;
-        unreliableSend(sock, pkt, size, dest);
+        unreliableSend(sock, pkt, size, dest, lossRate, corruptRate);
 
         // recv() returns -1 when TIMEOUT_MS passes with nothing received.
-        uint32_t ack;
-        while (recv(sock, (char*)&ack, sizeof ack, 0) == sizeof ack) {
-            if (ntohl(ack) == seq) return true;  // got it, move on
+        Packet ack;
+        int n;
+        while ((n = recv(sock, (char*)&ack, sizeof ack, 0)) >= 0) {
+            uint32_t k;
+            if (!readAck(ack, n, k)) { badAcks++; continue; }  // corrupted ACK: ignore
+            if (k == seq) return true;  // got it, move on
             // An ACK for an older packet (a delayed duplicate): ignore it.
         }
         // Timed out: loop around and send again.
@@ -114,7 +104,7 @@ int main(int argc, char* argv[]) {
 
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     std::cout << "Sent " << totalBytes << " bytes in " << seq + 1 << " packets, " << secs << " s\n";
-    std::cout << "Transmissions: " << packetsSent << " (" << retransmissions << " retransmissions)\n";
+    std::cout << "Transmissions: " << packetsSent << " (" << retransmissions << " retransmissions, " << badAcks << " corrupted ACKs ignored)\n";
     closeSocket(sock);
     return 0;
 }
