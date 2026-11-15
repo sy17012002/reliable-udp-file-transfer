@@ -57,7 +57,9 @@ struct Packet {
     char data[DATA_SIZE];
 };
 
-// The ACK is just the sequence number being acknowledged (4 bytes).
+// An ACK uses the same 8-byte header with len = 0, so it is checksummed too.
+// A corrupted ACK must never be believed: in Go-Back-N a bit flip could turn
+// "ACK 5" into "ACK 7" and the sender would skip packets the receiver never got.
 
 // Simple 16-bit checksum: add up the header fields and every data byte.
 // Any single flipped bit changes the sum, so the receiver can detect it.
@@ -87,4 +89,37 @@ inline void toHostOrder(Packet& p) {
 // Returns true with probability p (0.0 to 1.0). Used to simulate a bad network.
 inline bool chance(double p) {
     return (double)rand() / RAND_MAX < p;
+}
+
+// Sends through a deliberately bad "network": may drop the packet, or flip
+// one random bit in it. Used for data (sender) and for ACKs (receiver), so
+// faults happen in both directions.
+inline void unreliableSend(sock_t sock, const Packet& pkt, int size, const sockaddr_in& dest,
+                           double lossRate, double corruptRate) {
+    if (chance(lossRate)) return;  // packet lost
+
+    Packet copy = pkt;
+    if (chance(corruptRate)) {
+        char* bytes = (char*)&copy;
+        bytes[rand() % size] ^= (1 << (rand() % 8));  // flip one bit
+    }
+    sendto(sock, (const char*)&copy, size, 0, (const sockaddr*)&dest, sizeof dest);
+}
+
+// Builds an ACK for `seq`, ready to send (network order). Returns its size.
+inline int makeAck(Packet& ack, uint32_t seq) {
+    ack.seq = seq;
+    ack.len = 0;
+    ack.checksum = computeChecksum(ack);
+    toNetworkOrder(ack);
+    return HEADER_SIZE;
+}
+
+// Checks a received ACK of n bytes. Returns false if it is corrupted.
+inline bool readAck(Packet& ack, int n, uint32_t& seq) {
+    if (n != HEADER_SIZE) return false;
+    toHostOrder(ack);
+    if (ack.len != 0 || computeChecksum(ack) != ack.checksum) return false;
+    seq = ack.seq;
+    return true;
 }

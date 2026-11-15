@@ -1,7 +1,7 @@
 // Go-Back-N receiver: accepts packets only in order and sends cumulative ACKs.
 //
-// Usage: ./receiver <port> <outputFile> [ackLossRate]
-//   e.g. ./receiver 9000 received.jpg 0.1
+// Usage: ./receiver <port> <outputFile> [ackLossRate] [ackCorruptRate]
+//   e.g. ./receiver 9000 received.jpg 0.1 0.05
 //
 // The receiver is even simpler than in stop-and-wait:
 //   - If the packet is the next one expected, write it and move on.
@@ -19,12 +19,13 @@ const int LINGER_MS = 500;  // after the last packet, keep answering resends for
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <port> <outputFile> [ackLossRate]\n";
+        std::cerr << "Usage: " << argv[0] << " <port> <outputFile> [ackLossRate] [ackCorruptRate]\n";
         return 1;
     }
     int port = std::atoi(argv[1]);
     std::ofstream out(argv[2], std::ios::binary);
     double ackLossRate = (argc > 3) ? std::atof(argv[3]) : 0;
+    double ackCorruptRate = (argc > 4) ? std::atof(argv[4]) : 0;
     srand(7);
 
     // 1. Create a UDP socket and bind it to the port so the sender can reach us.
@@ -75,10 +76,10 @@ int main(int argc, char* argv[]) {
         }
 
         // 5. Cumulative ACK: "I have every packet before `expected`".
-        uint32_t ack = htonl(expected);
-        if (!chance(ackLossRate)) {
-            sendto(sock, (const char*)&ack, sizeof ack, 0, (sockaddr*)&sender, senderLen);
-        }
+        //    Sent through the bad network: it may be lost or corrupted.
+        Packet ack;
+        int ackSize = makeAck(ack, expected);
+        unreliableSend(sock, ack, ackSize, sender, ackLossRate, ackCorruptRate);
     }
 
     std::cout << "Done. New packets: " << delivered << ", out-of-order/duplicates dropped: "
